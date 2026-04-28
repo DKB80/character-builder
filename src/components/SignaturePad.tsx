@@ -1,74 +1,86 @@
 "use client";
 
-import { useEffect, useRef } from "react";
-import SigPad from "signature_pad";
-
-export type SignaturePadHandle = {
-  clear: () => void;
-  isEmpty: () => boolean;
-  toDataURL: () => string;
-};
+import { useCallback, useEffect, useRef, useState } from "react";
+import SignaturePadLib from "signature_pad";
 
 type Props = {
-  onChange?: (dataUrl: string | null) => void;
+  onChange: (dataUrl: string | null) => void;
 };
 
 export default function SignaturePad({ onChange }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const padRef = useRef<SigPad | null>(null);
+  const padRef = useRef<SignaturePadLib | null>(null);
+  const [empty, setEmpty] = useState(true);
+
+  const resize = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    canvas.width = canvas.offsetWidth * ratio;
+    canvas.height = canvas.offsetHeight * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx?.scale(ratio, ratio);
+    padRef.current?.clear();
+    setEmpty(true);
+    onChange(null);
+  }, [onChange]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resize = () => {
-      const ratio = Math.max(window.devicePixelRatio || 1, 1);
-      const data = padRef.current?.toData();
-      canvas.width = canvas.offsetWidth * ratio;
-      canvas.height = canvas.offsetHeight * ratio;
-      canvas.getContext("2d")?.scale(ratio, ratio);
-      padRef.current?.clear();
-      if (data) padRef.current?.fromData(data);
-    };
+    const ratio = Math.max(window.devicePixelRatio || 1, 1);
+    canvas.width = canvas.offsetWidth * ratio;
+    canvas.height = canvas.offsetHeight * ratio;
+    const ctx = canvas.getContext("2d");
+    ctx?.scale(ratio, ratio);
 
-    const pad = new SigPad(canvas, {
-      backgroundColor: "rgba(255,255,255,0)",
-      penColor: "#111827",
+    const pad = new SignaturePadLib(canvas, {
+      penColor: "rgb(15, 23, 42)",
+      backgroundColor: "rgb(255, 255, 255)",
       minWidth: 0.7,
       maxWidth: 2.2,
     });
     padRef.current = pad;
 
-    pad.addEventListener("endStroke", () => {
-      onChange?.(pad.isEmpty() ? null : pad.toDataURL("image/png"));
-    });
-
-    resize();
-    window.addEventListener("resize", resize);
-    return () => {
-      window.removeEventListener("resize", resize);
-      pad.off();
-      padRef.current = null;
+    const handleEnd = () => {
+      const isEmpty = pad.isEmpty();
+      setEmpty(isEmpty);
+      onChange(isEmpty ? null : pad.toDataURL("image/png"));
     };
-  }, [onChange]);
+    pad.addEventListener("endStroke", handleEnd);
 
-  const clear = () => {
+    const onResize = () => resize();
+    window.addEventListener("resize", onResize);
+
+    return () => {
+      pad.removeEventListener("endStroke", handleEnd);
+      pad.off();
+      window.removeEventListener("resize", onResize);
+    };
+  }, [onChange, resize]);
+
+  function clear() {
     padRef.current?.clear();
-    onChange?.(null);
-  };
+    setEmpty(true);
+    onChange(null);
+  }
 
   return (
     <div>
-      <div className="rounded-md border border-stone-300 bg-white">
-        <canvas
-          ref={canvasRef}
-          className="block h-40 w-full touch-none"
-          aria-label="Signature pad"
-        />
-      </div>
-      <div className="mt-2 flex justify-between text-xs text-stone-500">
-        <span>Sign above using mouse, trackpad, or touchscreen.</span>
-        <button type="button" className="underline" onClick={clear}>
+      <canvas
+        ref={canvasRef}
+        className="w-full h-44 rounded-lg border border-stone-300 bg-white touch-none"
+      />
+      <div className="mt-2 flex justify-between items-center">
+        <p className="text-xs text-stone-500">
+          {empty ? "Sign with your mouse, finger, or stylus." : "Looks good."}
+        </p>
+        <button
+          type="button"
+          onClick={clear}
+          className="text-sm text-stone-600 underline"
+        >
           Clear
         </button>
       </div>
