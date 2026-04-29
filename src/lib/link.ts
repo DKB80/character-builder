@@ -14,22 +14,43 @@ export function decodeContext(token: string): RequestContext | null {
   try {
     const json = base64UrlDecode(token);
     const parsed = JSON.parse(json) as Record<string, unknown>;
-    if (
-      !parsed ||
-      typeof parsed !== "object" ||
-      typeof parsed.n !== "string" ||
-      typeof parsed.u !== "string"
-    ) {
-      return null;
+    if (!parsed || typeof parsed !== "object") return null;
+
+    if (typeof parsed.n === "string" && typeof parsed.u === "string") {
+      return {
+        subject: {
+          name: parsed.n,
+          pronouns: typeof parsed.p === "string" ? parsed.p : undefined,
+        },
+        purpose: parsed.u,
+        details: typeof parsed.d === "string" ? parsed.d : "",
+      };
     }
-    return {
-      subject: {
-        name: parsed.n,
-        pronouns: typeof parsed.p === "string" ? parsed.p : undefined,
-      },
-      purpose: parsed.u,
-      details: typeof parsed.d === "string" ? parsed.d : "",
+
+    const legacy = parsed as {
+      subject?: { name?: unknown; pronouns?: unknown };
+      purpose?: unknown;
+      details?: unknown;
     };
+    if (
+      legacy.subject &&
+      typeof legacy.subject.name === "string" &&
+      typeof legacy.purpose === "string"
+    ) {
+      return {
+        subject: {
+          name: legacy.subject.name,
+          pronouns:
+            typeof legacy.subject.pronouns === "string"
+              ? legacy.subject.pronouns
+              : undefined,
+        },
+        purpose: legacy.purpose,
+        details: typeof legacy.details === "string" ? legacy.details : "",
+      };
+    }
+
+    return null;
   } catch {
     return null;
   }
