@@ -201,6 +201,7 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
       {step === "sign" && (
         <SignStep
           referee={referee}
+          onChangeReferee={setReferee}
           typedName={typedName}
           onChangeTypedName={setTypedName}
           onSignatureChange={setSignatureDataUrl}
@@ -262,7 +263,6 @@ function IdentifyStep({
 }) {
   const ready =
     referee.name.trim() &&
-    referee.email.trim() &&
     referee.relationship.trim() &&
     referee.knownDuration.trim();
 
@@ -277,29 +277,6 @@ function IdentifyStep({
           className={inputCls}
           value={referee.name}
           onChange={(e) => onChange({ ...referee, name: e.target.value })}
-        />
-      </Field>
-      <Field label="Email" htmlFor="ref-email">
-        <input
-          id="ref-email"
-          type="email"
-          required
-          className={inputCls}
-          value={referee.email}
-          onChange={(e) => onChange({ ...referee, email: e.target.value })}
-        />
-      </Field>
-      <Field
-        label="Mobile (optional)"
-        htmlFor="ref-mobile"
-        hint="Included on the PDF if you'd like to be reachable by phone."
-      >
-        <input
-          id="ref-mobile"
-          type="tel"
-          className={inputCls}
-          value={referee.mobile || ""}
-          onChange={(e) => onChange({ ...referee, mobile: e.target.value })}
         />
       </Field>
       <Field
@@ -524,6 +501,7 @@ function DraftStep({
 
 function SignStep({
   referee,
+  onChangeReferee,
   typedName,
   onChangeTypedName,
   onSignatureChange,
@@ -533,6 +511,7 @@ function SignStep({
   onDownload,
 }: {
   referee: Referee;
+  onChangeReferee: (r: Referee) => void;
   typedName: string;
   onChangeTypedName: (v: string) => void;
   onSignatureChange: (v: string | null) => void;
@@ -561,6 +540,38 @@ function SignStep({
           value={typedName}
           onChange={(e) => onChangeTypedName(e.target.value)}
           placeholder={referee.name}
+        />
+      </Field>
+
+      <Field
+        label="Email (optional)"
+        htmlFor="ref-email"
+        hint="Included on the PDF if you'd like to be reachable by email."
+      >
+        <input
+          id="ref-email"
+          type="email"
+          className={inputCls}
+          value={referee.email}
+          onChange={(e) =>
+            onChangeReferee({ ...referee, email: e.target.value })
+          }
+        />
+      </Field>
+
+      <Field
+        label="Mobile (optional)"
+        htmlFor="ref-mobile"
+        hint="Included on the PDF if you'd like to be reachable by phone."
+      >
+        <input
+          id="ref-mobile"
+          type="tel"
+          className={inputCls}
+          value={referee.mobile || ""}
+          onChange={(e) =>
+            onChangeReferee({ ...referee, mobile: e.target.value })
+          }
         />
       </Field>
 
