@@ -101,6 +101,9 @@ export async function buildPdf(opts: BuildPdfOpts): Promise<Uint8Array> {
   if (opts.referee.email) {
     drawLine(`Email: ${opts.referee.email}`);
   }
+  if (opts.referee.mobile) {
+    drawLine(`Mobile: ${opts.referee.mobile}`);
+  }
   drawLine(`Signed: ${opts.signedAt.toISOString()}`, {
     font: fontItalic,
     size: 9,

@@ -10,6 +10,7 @@ export type RequestContext = {
 export type Referee = {
   name: string;
   email: string;
+  mobile?: string;
   relationship: string;
   knownDuration: string;
 };

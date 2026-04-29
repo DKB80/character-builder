@@ -15,5 +15,9 @@ export function baseQuestions(ctx: RequestContext): Question[] {
       id: "example",
       prompt: `Can you describe a specific moment or example that illustrates ${name}'s character?`,
     },
+    {
+      id: "parenting",
+      prompt: `How would you describe the boys' relationship with their Dad?`,
+    },
   ];
 }

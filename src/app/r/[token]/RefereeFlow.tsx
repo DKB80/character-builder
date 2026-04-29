@@ -18,6 +18,7 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
   const [referee, setReferee] = useState<Referee>({
     name: "",
     email: "",
+    mobile: "",
     relationship: "",
     knownDuration: "",
   });
@@ -286,6 +287,19 @@ function IdentifyStep({
           className={inputCls}
           value={referee.email}
           onChange={(e) => onChange({ ...referee, email: e.target.value })}
+        />
+      </Field>
+      <Field
+        label="Mobile (optional)"
+        htmlFor="ref-mobile"
+        hint="Included on the PDF if you'd like to be reachable by phone."
+      >
+        <input
+          id="ref-mobile"
+          type="tel"
+          className={inputCls}
+          value={referee.mobile || ""}
+          onChange={(e) => onChange({ ...referee, mobile: e.target.value })}
         />
       </Field>
       <Field
