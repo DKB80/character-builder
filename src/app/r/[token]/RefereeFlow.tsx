@@ -35,6 +35,7 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
 
   const [typedName, setTypedName] = useState("");
   const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+  const [signMethod, setSignMethod] = useState<"digital" | "print">("digital");
   const [downloading, setDownloading] = useState(false);
 
   const allQuestions = [...base, ...suggested];
@@ -124,7 +125,8 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
   }
 
   async function downloadPdf() {
-    if (!signatureDataUrl || !typedName.trim() || !draft.trim()) return;
+    if (!typedName.trim() || !draft.trim()) return;
+    if (signMethod === "digital" && !signatureDataUrl) return;
     setDownloading(true);
     try {
       const bytes = await buildPdf({
@@ -132,8 +134,7 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
         referee,
         letter: draft,
         typedName: typedName.trim(),
-        signatureDataUrl,
-        signedAt: new Date(),
+        signatureDataUrl: signMethod === "digital" ? signatureDataUrl : null,
       });
       const blob = new Blob([new Uint8Array(bytes)], {
         type: "application/pdf",
@@ -200,12 +201,15 @@ export default function RefereeFlow({ context }: { context: RequestContext }) {
 
       {step === "sign" && (
         <SignStep
+          context={context}
           referee={referee}
           onChangeReferee={setReferee}
           typedName={typedName}
           onChangeTypedName={setTypedName}
           onSignatureChange={setSignatureDataUrl}
-          signatureReady={!!signatureDataUrl}
+          signatureDataUrl={signatureDataUrl}
+          signMethod={signMethod}
+          onChangeSignMethod={setSignMethod}
           downloading={downloading}
           onBack={() => setStep("draft")}
           onDownload={downloadPdf}
@@ -500,35 +504,42 @@ function DraftStep({
 }
 
 function SignStep({
+  context,
   referee,
   onChangeReferee,
   typedName,
   onChangeTypedName,
   onSignatureChange,
-  signatureReady,
+  signatureDataUrl,
+  signMethod,
+  onChangeSignMethod,
   downloading,
   onBack,
   onDownload,
 }: {
+  context: RequestContext;
   referee: Referee;
   onChangeReferee: (r: Referee) => void;
   typedName: string;
   onChangeTypedName: (v: string) => void;
   onSignatureChange: (v: string | null) => void;
-  signatureReady: boolean;
+  signatureDataUrl: string | null;
+  signMethod: "digital" | "print";
+  onChangeSignMethod: (m: "digital" | "print") => void;
   downloading: boolean;
   onBack: () => void;
   onDownload: () => void;
 }) {
-  const ready = typedName.trim() && signatureReady;
+  const ready =
+    typedName.trim() && (signMethod === "print" || !!signatureDataUrl);
 
   return (
     <section className="space-y-5">
       <div>
         <h2 className="text-xl font-serif font-semibold">Sign and download</h2>
         <p className="text-sm text-stone-600 mt-1">
-          Type your name as you'd like it to appear, then draw your signature.
-          A timestamped PDF will download to this device.
+          Type your name as you'd like it to appear, then choose how you'd
+          like to sign.
         </p>
       </div>
 
@@ -542,6 +553,44 @@ function SignStep({
           placeholder={referee.name}
         />
       </Field>
+
+      <fieldset className="space-y-2">
+        <legend className="block text-sm font-medium mb-1">
+          How would you like to sign?
+        </legend>
+        <label className="flex items-start gap-2 rounded-lg border border-stone-300 bg-white p-3 cursor-pointer">
+          <input
+            type="radio"
+            name="sign-method"
+            value="digital"
+            checked={signMethod === "digital"}
+            onChange={() => onChangeSignMethod("digital")}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Sign digitally now</span>
+            <span className="block text-xs text-stone-500">
+              Draw your signature below; it'll be embedded in the PDF.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 rounded-lg border border-stone-300 bg-white p-3 cursor-pointer">
+          <input
+            type="radio"
+            name="sign-method"
+            value="print"
+            checked={signMethod === "print"}
+            onChange={() => onChangeSignMethod("print")}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Print and sign by hand</span>
+            <span className="block text-xs text-stone-500">
+              Download the PDF with a blank line, print it, and sign on paper.
+            </span>
+          </span>
+        </label>
+      </fieldset>
 
       <Field
         label="Email (optional)"
@@ -575,16 +624,25 @@ function SignStep({
         />
       </Field>
 
-      <div>
-        <p className="block text-sm font-medium mb-1">Signature</p>
-        <SignaturePad onChange={onSignatureChange} />
-      </div>
+      {signMethod === "digital" && (
+        <div>
+          <p className="block text-sm font-medium mb-1">Signature</p>
+          <SignaturePad onChange={onSignatureChange} />
+        </div>
+      )}
 
-      <p className="text-xs text-stone-500">
-        Signing applies a typed name, drawn signature, and timestamp to the PDF
-        you'll download. This is acceptable for most informal references but is
-        not a "qualified" e-signature with a third-party audit trail.
-      </p>
+      <div>
+        <p className="block text-sm font-medium mb-2">
+          Signature block preview
+        </p>
+        <SignatureBlockPreview
+          context={context}
+          referee={referee}
+          typedName={typedName}
+          signatureDataUrl={signMethod === "digital" ? signatureDataUrl : null}
+          signMethod={signMethod}
+        />
+      </div>
 
       <div className="flex items-center justify-between pt-2">
         <button
@@ -600,10 +658,64 @@ function SignStep({
           disabled={!ready || downloading}
           className="rounded-lg bg-stone-900 text-white px-4 py-2 font-medium disabled:bg-stone-300"
         >
-          {downloading ? "Building PDF…" : "Sign and download PDF"}
+          {downloading
+            ? "Building PDF…"
+            : signMethod === "digital"
+              ? "Sign and download PDF"
+              : "Download PDF to print"}
         </button>
       </div>
     </section>
+  );
+}
+
+function SignatureBlockPreview({
+  context,
+  referee,
+  typedName,
+  signatureDataUrl,
+  signMethod,
+}: {
+  context: RequestContext;
+  referee: Referee;
+  typedName: string;
+  signatureDataUrl: string | null;
+  signMethod: "digital" | "print";
+}) {
+  const displayName = typedName.trim() || referee.name.trim() || "(your name)";
+  return (
+    <div className="rounded-lg border border-stone-300 bg-white p-5 font-serif text-stone-900">
+      <div className="h-20 flex items-end">
+        {signMethod === "digital" ? (
+          signatureDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={signatureDataUrl}
+              alt="Your signature"
+              className="max-h-20 max-w-[200px]"
+            />
+          ) : (
+            <span className="text-stone-400 italic text-sm font-sans">
+              Your signature will appear here.
+            </span>
+          )
+        ) : (
+          <span className="text-stone-400 italic text-sm font-sans">
+            Sign here after printing.
+          </span>
+        )}
+      </div>
+      <div className="border-t border-stone-400 mt-1 mb-2 w-64" />
+      <p className="font-bold">{displayName}</p>
+      {referee.relationship && (
+        <p>
+          {referee.relationship} of {context.subject.name}
+        </p>
+      )}
+      {referee.knownDuration && <p>Known for: {referee.knownDuration}</p>}
+      {referee.email && <p>Email: {referee.email}</p>}
+      {referee.mobile && <p>Mobile: {referee.mobile}</p>}
+    </div>
   );
 }
 

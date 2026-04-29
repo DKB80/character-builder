@@ -6,8 +6,7 @@ type BuildPdfOpts = {
   referee: Referee;
   letter: string;
   typedName: string;
-  signatureDataUrl: string;
-  signedAt: Date;
+  signatureDataUrl?: string | null;
 };
 
 const PAGE_WIDTH = 612;
@@ -20,7 +19,6 @@ export async function buildPdf(opts: BuildPdfOpts): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const font = await doc.embedFont(StandardFonts.TimesRoman);
   const fontBold = await doc.embedFont(StandardFonts.TimesRomanBold);
-  const fontItalic = await doc.embedFont(StandardFonts.TimesRomanItalic);
 
   let page = doc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
   let y = PAGE_HEIGHT - MARGIN;
@@ -72,21 +70,28 @@ export async function buildPdf(opts: BuildPdfOpts): Promise<Uint8Array> {
 
   y -= LINE_HEIGHT;
 
-  const sigBytes = dataUrlToBytes(opts.signatureDataUrl);
-  const sigImage = await doc.embedPng(sigBytes);
-  const sigWidth = 200;
-  const sigHeight = (sigImage.height / sigImage.width) * sigWidth;
+  let sigHeight = 60;
+  if (opts.signatureDataUrl) {
+    const sigBytes = dataUrlToBytes(opts.signatureDataUrl);
+    const sigImage = await doc.embedPng(sigBytes);
+    const sigWidth = 200;
+    sigHeight = (sigImage.height / sigImage.width) * sigWidth;
 
-  const blockHeight = sigHeight + LINE_HEIGHT * 7;
-  if (y - blockHeight < MARGIN) newPage();
+    const blockHeight = sigHeight + LINE_HEIGHT * 6;
+    if (y - blockHeight < MARGIN) newPage();
 
-  page.drawImage(sigImage, {
-    x: MARGIN,
-    y: y - sigHeight,
-    width: sigWidth,
-    height: sigHeight,
-  });
-  y -= sigHeight + 4;
+    page.drawImage(sigImage, {
+      x: MARGIN,
+      y: y - sigHeight,
+      width: sigWidth,
+      height: sigHeight,
+    });
+    y -= sigHeight + 4;
+  } else {
+    const blockHeight = sigHeight + LINE_HEIGHT * 6;
+    if (y - blockHeight < MARGIN) newPage();
+    y -= sigHeight + 4;
+  }
 
   drawLineOnPage(page, MARGIN, y, MARGIN + 250, y, rgb(0.6, 0.6, 0.6));
   y -= LINE_HEIGHT;
@@ -103,24 +108,6 @@ export async function buildPdf(opts: BuildPdfOpts): Promise<Uint8Array> {
   }
   if (opts.referee.mobile) {
     drawLine(`Mobile: ${opts.referee.mobile}`);
-  }
-  drawLine(`Signed: ${opts.signedAt.toISOString()}`, {
-    font: fontItalic,
-    size: 9,
-  });
-
-  y -= LINE_HEIGHT * 0.5;
-  const noticeText = `Electronic-signature notice: This document was signed electronically by ${opts.typedName} on ${opts.signedAt.toLocaleString()}. The typed name, drawn signature, timestamp, and the relationship details above were captured at the time of signing.`;
-  for (const wrapped of wrap(noticeText, fontItalic, 9)) {
-    if (y - LINE_HEIGHT < MARGIN) newPage();
-    page.drawText(wrapped, {
-      x: MARGIN,
-      y,
-      font: fontItalic,
-      size: 9,
-      color: rgb(0.3, 0.3, 0.3),
-    });
-    y -= LINE_HEIGHT * 0.85;
   }
 
   return doc.save();
