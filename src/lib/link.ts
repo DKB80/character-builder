@@ -1,29 +1,34 @@
 import type { RequestContext } from "./types";
 
 export function encodeContext(ctx: RequestContext): string {
-  return base64UrlEncode(JSON.stringify(ctx));
+  const compact: Record<string, string> = {
+    n: ctx.subject.name,
+    u: ctx.purpose,
+  };
+  if (ctx.subject.pronouns) compact.p = ctx.subject.pronouns;
+  if (ctx.details) compact.d = ctx.details;
+  return base64UrlEncode(JSON.stringify(compact));
 }
 
 export function decodeContext(token: string): RequestContext | null {
   try {
     const json = base64UrlDecode(token);
-    const parsed = JSON.parse(json) as Partial<RequestContext>;
+    const parsed = JSON.parse(json) as Record<string, unknown>;
     if (
       !parsed ||
       typeof parsed !== "object" ||
-      !parsed.subject ||
-      typeof parsed.subject.name !== "string" ||
-      typeof parsed.purpose !== "string"
+      typeof parsed.n !== "string" ||
+      typeof parsed.u !== "string"
     ) {
       return null;
     }
     return {
       subject: {
-        name: parsed.subject.name,
-        pronouns: parsed.subject.pronouns,
+        name: parsed.n,
+        pronouns: typeof parsed.p === "string" ? parsed.p : undefined,
       },
-      purpose: parsed.purpose,
-      details: typeof parsed.details === "string" ? parsed.details : "",
+      purpose: parsed.u,
+      details: typeof parsed.d === "string" ? parsed.d : "",
     };
   } catch {
     return null;
