@@ -1,38 +1,27 @@
-export type ReferencePurpose =
-  | "family_court"
-  | "custody_parenting"
-  | "general_character"
-  | "court_general";
-
 export type RequestContext = {
-  v: 1;
-  subjectName: string;
-  subjectPronouns?: string;
-  purpose: ReferencePurpose;
-  recipient?: string;
-  context?: string;
-  requesterEmail?: string;
-  createdAt: string;
+  subject: {
+    name: string;
+    pronouns?: string;
+  };
+  purpose: string;
+  details: string;
 };
 
-export type RefereeAnswer = {
-  question: string;
-  answer: string;
-};
-
-export type RefereeDetails = {
-  fullName: string;
+export type Referee = {
+  name: string;
   email: string;
-  phone?: string;
-  occupation?: string;
-  address?: string;
+  mobile?: string;
   relationship: string;
-  yearsKnown: string;
+  knownDuration: string;
 };
 
-export const PURPOSE_LABELS: Record<ReferencePurpose, string> = {
-  family_court: "Family court",
-  custody_parenting: "Custody / parenting",
-  general_character: "General character",
-  court_general: "Court (general)",
+export type Question = {
+  id: string;
+  prompt: string;
+};
+
+export type Answer = {
+  questionId: string;
+  prompt: string;
+  response: string;
 };

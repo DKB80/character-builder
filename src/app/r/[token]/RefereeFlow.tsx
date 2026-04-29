@@ -2,430 +2,767 @@
 
 import { useMemo, useState } from "react";
 import SignaturePad from "@/components/SignaturePad";
-import { buildReferencePdf, downloadPdf } from "@/lib/pdf";
-import { baseQuestionsFor, BASE_REFEREE_DETAIL_FIELDS } from "@/lib/questions";
-import {
-  PURPOSE_LABELS,
-  type RefereeAnswer,
-  type RefereeDetails,
-  type RequestContext,
+import { buildPdf } from "@/lib/pdf";
+import { baseQuestions } from "@/lib/questions";
+import type {
+  Answer,
+  Question,
+  Referee,
+  RequestContext,
 } from "@/lib/types";
 
-type Step = "intro" | "details" | "interview" | "draft" | "sign" | "done";
-
-const EMPTY_REFEREE: RefereeDetails = {
-  fullName: "",
-  email: "",
-  phone: "",
-  occupation: "",
-  address: "",
-  relationship: "",
-  yearsKnown: "",
-};
+type Step = "identify" | "questions" | "draft" | "sign" | "done";
 
 export default function RefereeFlow({ context }: { context: RequestContext }) {
-  const [step, setStep] = useState<Step>("intro");
-  const [referee, setReferee] = useState<RefereeDetails>(EMPTY_REFEREE);
-  const baseQuestions = useMemo(
-    () => baseQuestionsFor(context.purpose, context.subjectName),
-    [context]
-  );
-  const [aiQuestions, setAiQuestions] = useState<string[]>([]);
-  const [answers, setAnswers] = useState<Record<string, string>>({});
+  const [step, setStep] = useState<Step>("identify");
+  const [referee, setReferee] = useState<Referee>({
+    name: "",
+    email: "",
+    mobile: "",
+    relationship: "",
+    knownDuration: "",
+  });
+  const base = useMemo(() => baseQuestions(context), [context]);
+  const [suggested, setSuggested] = useState<Question[]>([]);
   const [loadingQuestions, setLoadingQuestions] = useState(false);
-  const [draft, setDraft] = useState<string>("");
-  const [editedDraft, setEditedDraft] = useState<string>("");
-  const [draftLoading, setDraftLoading] = useState(false);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+  const [responses, setResponses] = useState<Record<string, string>>({});
+
+  const [draft, setDraft] = useState("");
+  const [drafting, setDrafting] = useState(false);
+  const [draftError, setDraftError] = useState<string | null>(null);
   const [revisionInstruction, setRevisionInstruction] = useState("");
-  const [typedSignature, setTypedSignature] = useState("");
-  const [drawnSignature, setDrawnSignature] = useState<string | null>(null);
-  const [confirmAccuracy, setConfirmAccuracy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  const allQuestions = useMemo(
-    () => [...baseQuestions, ...aiQuestions],
-    [baseQuestions, aiQuestions]
-  );
+  const [typedName, setTypedName] = useState("");
+  const [signatureDataUrl, setSignatureDataUrl] = useState<string | null>(null);
+  const [signMethod, setSignMethod] = useState<"digital" | "print">("digital");
+  const [downloading, setDownloading] = useState(false);
 
-  const detailsValid = BASE_REFEREE_DETAIL_FIELDS.every(
-    (f) => !f.required || (referee as Record<string, string>)[f.key]?.trim()
-  );
+  const allQuestions = [...base, ...suggested];
 
-  const interviewValid = allQuestions.every((q) => answers[q]?.trim());
-
-  const goToInterview = async () => {
-    setError(null);
+  async function submitIdentify(e: React.FormEvent) {
+    e.preventDefault();
     setLoadingQuestions(true);
-    setStep("interview");
+    setQuestionsError(null);
     try {
       const res = await fetch("/api/suggest-questions", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ context, referee }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to load questions");
-      setAiQuestions(Array.isArray(data.questions) ? data.questions : []);
-    } catch (e) {
-      // Non-fatal: fall back to base questions only
-      setAiQuestions([]);
-    } finally {
-      setLoadingQuestions(false);
-    }
-  };
-
-  const generateDraft = async (revision = false) => {
-    setError(null);
-    setDraftLoading(true);
-    try {
-      const payloadAnswers: RefereeAnswer[] = allQuestions.map((q) => ({
-        question: q,
-        answer: answers[q] || "",
-      }));
-      const res = await fetch("/api/draft", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           context,
           referee,
-          answers: payloadAnswers,
-          currentDraft: revision ? editedDraft : undefined,
-          revisionInstruction: revision ? revisionInstruction : undefined,
+          baseQuestions: base.map((q) => q.prompt),
         }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to draft letter");
-      setDraft(data.draft || "");
-      setEditedDraft(data.draft || "");
-      setRevisionInstruction("");
-      if (!revision) setStep("draft");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to draft letter");
+      if (!res.ok) {
+        throw new Error(`Server returned ${res.status}`);
+      }
+      const data = (await res.json()) as { questions?: string[] };
+      const generated: Question[] = (data.questions || []).map((prompt, i) => ({
+        id: `s${i}`,
+        prompt,
+      }));
+      setSuggested(generated);
+      setStep("questions");
+    } catch (err) {
+      setQuestionsError(
+        err instanceof Error ? err.message : "Could not load follow-up questions."
+      );
+      setSuggested([]);
+      setStep("questions");
     } finally {
-      setDraftLoading(false);
+      setLoadingQuestions(false);
     }
-  };
+  }
 
-  const handleSignAndDownload = async () => {
-    setError(null);
-    if (!typedSignature.trim()) {
-      setError("Please type your full name as your signature.");
-      return;
-    }
-    if (!drawnSignature) {
-      setError("Please draw your signature in the box.");
-      return;
-    }
-    if (!confirmAccuracy) {
-      setError("Please confirm the reference is true and accurate.");
-      return;
-    }
+  async function generateDraft(opts?: { revision?: string }) {
+    setDrafting(true);
+    setDraftError(null);
+    const previousDraft = opts?.revision ? draft : undefined;
+    if (!opts?.revision) setDraft("");
     try {
-      const bytes = await buildReferencePdf({
+      const answers: Answer[] = allQuestions.map((q) => ({
+        questionId: q.id,
+        prompt: q.prompt,
+        response: responses[q.id] || "",
+      }));
+      const res = await fetch("/api/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context,
+          referee,
+          answers,
+          revisionInstruction: opts?.revision,
+          previousDraft,
+        }),
+      });
+      if (!res.ok || !res.body) {
+        throw new Error(`Server returned ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let acc = "";
+      if (opts?.revision) acc = "";
+      setDraft("");
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        acc += decoder.decode(value, { stream: true });
+        setDraft(acc);
+      }
+      acc += decoder.decode();
+      setDraft(acc.trim());
+      if (step !== "draft") setStep("draft");
+      setRevisionInstruction("");
+    } catch (err) {
+      setDraftError(
+        err instanceof Error ? err.message : "Could not draft the letter."
+      );
+    } finally {
+      setDrafting(false);
+    }
+  }
+
+  async function downloadPdf() {
+    if (!typedName.trim() || !draft.trim()) return;
+    if (signMethod === "digital" && !signatureDataUrl) return;
+    setDownloading(true);
+    try {
+      const bytes = await buildPdf({
         context,
         referee,
-        letterBody: editedDraft,
-        typedSignature: typedSignature.trim(),
-        drawnSignaturePng: drawnSignature,
-        signedAt: new Date(),
+        letter: draft,
+        typedName: typedName.trim(),
+        signatureDataUrl: signMethod === "digital" ? signatureDataUrl : null,
       });
-      const safeName = context.subjectName.replace(/[^a-z0-9]+/gi, "_");
-      downloadPdf(bytes, `Character_Reference_${safeName}.pdf`);
+      const blob = new Blob([new Uint8Array(bytes)], {
+        type: "application/pdf",
+      });
+      const url = URL.createObjectURL(blob);
+      const filename = `reference-${slug(context.subject.name)}-${slug(typedName)}.pdf`;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
       setStep("done");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to generate PDF");
+    } finally {
+      setDownloading(false);
     }
-  };
+  }
 
   return (
-    <main className="mx-auto max-w-2xl px-4 py-10">
-      <header className="mb-6">
-        <h1 className="text-2xl font-semibold">
-          Character reference for {context.subjectName}
-        </h1>
-        <p className="mt-1 text-sm text-stone-600">
-          Purpose: {PURPOSE_LABELS[context.purpose]}
-          {context.recipient ? ` · Addressed to ${context.recipient}` : ""}
-        </p>
-      </header>
+    <main>
+      <Header context={context} />
 
-      {error && (
-        <div className="mb-4 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800">
-          {error}
-        </div>
+      {step === "identify" && (
+        <IdentifyStep
+          referee={referee}
+          onChange={setReferee}
+          onSubmit={submitIdentify}
+          loading={loadingQuestions}
+          error={questionsError}
+        />
       )}
 
-      {step === "intro" && (
-        <section className="card space-y-4">
-          <p className="text-sm text-stone-700">
-            <strong>{context.subjectName}</strong> has asked you to write a
-            character reference. This guided form will:
-          </p>
-          <ol className="list-decimal space-y-1 pl-5 text-sm text-stone-700">
-            <li>Collect a few details about you.</li>
-            <li>Ask you a short set of questions about {context.subjectName}.</li>
-            <li>
-              Generate a draft letter from your answers, which you can edit or
-              ask the AI to revise.
-            </li>
-            <li>Let you sign and download a PDF to send to {context.subjectName}.</li>
-          </ol>
-          {context.context && (
-            <div className="rounded-md bg-stone-100 p-3 text-sm text-stone-800">
-              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-stone-500">
-                Note from {context.subjectName}
-              </div>
-              {context.context}
-            </div>
-          )}
-          <p className="text-xs text-stone-500">
-            Nothing is stored on a server. The draft and signature stay in your
-            browser; the only network calls are to the AI for question
-            suggestions and drafting.
-          </p>
-          <div className="pt-2">
-            <button className="btn-primary" onClick={() => setStep("details")}>
-              Get started
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === "details" && (
-        <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Your details</h2>
-          {BASE_REFEREE_DETAIL_FIELDS.map((f) => (
-            <div key={f.key}>
-              <label className="label" htmlFor={f.key}>
-                {f.label}
-                {f.required && <span className="text-red-600"> *</span>}
-              </label>
-              <input
-                id={f.key}
-                className="input"
-                type={"type" in f && f.type ? f.type : "text"}
-                value={(referee as Record<string, string>)[f.key] || ""}
-                onChange={(e) =>
-                  setReferee((r) => ({ ...r, [f.key]: e.target.value }))
-                }
-              />
-            </div>
-          ))}
-          <div className="flex justify-between pt-2">
-            <button
-              className="btn-secondary"
-              onClick={() => setStep("intro")}
-              type="button"
-            >
-              Back
-            </button>
-            <button
-              className="btn-primary"
-              disabled={!detailsValid}
-              onClick={goToInterview}
-            >
-              Continue
-            </button>
-          </div>
-        </section>
-      )}
-
-      {step === "interview" && (
-        <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">A few questions</h2>
-          <p className="text-sm text-stone-600">
-            Answer in your own words. Specific examples or short stories work
-            better than general statements. There&rsquo;s no minimum length.
-          </p>
-
-          {baseQuestions.map((q) => (
-            <div key={q}>
-              <label className="label">{q}</label>
-              <textarea
-                className="textarea"
-                rows={3}
-                value={answers[q] || ""}
-                onChange={(e) =>
-                  setAnswers((a) => ({ ...a, [q]: e.target.value }))
-                }
-              />
-            </div>
-          ))}
-
-          {loadingQuestions && (
-            <p className="text-sm italic text-stone-500">
-              Generating a few extra tailored questions&hellip;
-            </p>
-          )}
-
-          {aiQuestions.length > 0 && (
-            <>
-              <div className="border-t border-stone-200 pt-3">
-                <p className="text-xs uppercase tracking-wide text-stone-500">
-                  Tailored follow-ups
-                </p>
-              </div>
-              {aiQuestions.map((q) => (
-                <div key={q}>
-                  <label className="label">{q}</label>
-                  <textarea
-                    className="textarea"
-                    rows={3}
-                    value={answers[q] || ""}
-                    onChange={(e) =>
-                      setAnswers((a) => ({ ...a, [q]: e.target.value }))
-                    }
-                  />
-                </div>
-              ))}
-            </>
-          )}
-
-          <div className="flex justify-between pt-2">
-            <button
-              className="btn-secondary"
-              onClick={() => setStep("details")}
-              type="button"
-            >
-              Back
-            </button>
-            <button
-              className="btn-primary"
-              disabled={!interviewValid || draftLoading || loadingQuestions}
-              onClick={() => generateDraft(false)}
-            >
-              {draftLoading ? "Drafting…" : "Generate draft letter"}
-            </button>
-          </div>
-        </section>
+      {step === "questions" && (
+        <QuestionsStep
+          questions={allQuestions}
+          responses={responses}
+          onChangeResponse={(id, v) =>
+            setResponses((r) => ({ ...r, [id]: v }))
+          }
+          onBack={() => setStep("identify")}
+          onSubmit={() => generateDraft()}
+          drafting={drafting}
+          error={questionsError}
+        />
       )}
 
       {step === "draft" && (
-        <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Review and edit the draft</h2>
-          <p className="text-sm text-stone-600">
-            This was drafted from your answers. Edit it directly in the box, or
-            ask the AI to revise it (e.g. &ldquo;make it shorter&rdquo;,
-            &ldquo;more formal&rdquo;, &ldquo;mention the school pickup
-            example&rdquo;).
-          </p>
-          <textarea
-            className="textarea font-serif"
-            rows={18}
-            value={editedDraft}
-            onChange={(e) => setEditedDraft(e.target.value)}
-          />
-
-          <div className="rounded-md border border-stone-200 bg-stone-50 p-3">
-            <label className="label" htmlFor="revise">
-              Ask AI to revise
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="revise"
-                className="input"
-                placeholder="e.g. Make it more formal and a bit shorter"
-                value={revisionInstruction}
-                onChange={(e) => setRevisionInstruction(e.target.value)}
-              />
-              <button
-                className="btn-secondary whitespace-nowrap"
-                disabled={!revisionInstruction.trim() || draftLoading}
-                onClick={() => generateDraft(true)}
-              >
-                {draftLoading ? "Revising…" : "Revise"}
-              </button>
-            </div>
-          </div>
-
-          <div className="flex justify-between pt-2">
-            <button
-              className="btn-secondary"
-              onClick={() => setStep("interview")}
-              type="button"
-            >
-              Back
-            </button>
-            <button
-              className="btn-primary"
-              disabled={!editedDraft.trim()}
-              onClick={() => setStep("sign")}
-            >
-              Continue to sign
-            </button>
-          </div>
-        </section>
+        <DraftStep
+          draft={draft}
+          onChange={setDraft}
+          drafting={drafting}
+          error={draftError}
+          revisionInstruction={revisionInstruction}
+          onChangeInstruction={setRevisionInstruction}
+          onRevise={() =>
+            revisionInstruction.trim() &&
+            generateDraft({ revision: revisionInstruction.trim() })
+          }
+          onContinue={() => setStep("sign")}
+          onBack={() => setStep("questions")}
+        />
       )}
 
       {step === "sign" && (
-        <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Sign and download</h2>
-
-          <div>
-            <label className="label" htmlFor="typed">
-              Type your full name as signature
-            </label>
-            <input
-              id="typed"
-              className="input"
-              value={typedSignature}
-              onChange={(e) => setTypedSignature(e.target.value)}
-              placeholder={referee.fullName}
-            />
-          </div>
-
-          <div>
-            <span className="label">Draw your signature</span>
-            <SignaturePad onChange={setDrawnSignature} />
-          </div>
-
-          <label className="flex items-start gap-2 text-sm text-stone-700">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={confirmAccuracy}
-              onChange={(e) => setConfirmAccuracy(e.target.checked)}
-            />
-            <span>
-              I confirm this reference is true to the best of my knowledge, that
-              I am the person named above, and I am signing it electronically.
-            </span>
-          </label>
-
-          <div className="flex justify-between pt-2">
-            <button
-              className="btn-secondary"
-              onClick={() => setStep("draft")}
-              type="button"
-            >
-              Back
-            </button>
-            <button className="btn-primary" onClick={handleSignAndDownload}>
-              Sign &amp; download PDF
-            </button>
-          </div>
-        </section>
+        <SignStep
+          context={context}
+          referee={referee}
+          onChangeReferee={setReferee}
+          typedName={typedName}
+          onChangeTypedName={setTypedName}
+          onSignatureChange={setSignatureDataUrl}
+          signatureDataUrl={signatureDataUrl}
+          signMethod={signMethod}
+          onChangeSignMethod={setSignMethod}
+          downloading={downloading}
+          onBack={() => setStep("draft")}
+          onDownload={downloadPdf}
+        />
       )}
 
-      {step === "done" && (
-        <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Done — thank you</h2>
-          <p className="text-sm text-stone-700">
-            Your signed PDF has been downloaded. Please email it to{" "}
-            {context.requesterEmail ? (
-              <a className="underline" href={`mailto:${context.requesterEmail}`}>
-                {context.requesterEmail}
-              </a>
-            ) : (
-              <>{context.subjectName}</>
-            )}
-            .
-          </p>
-          <p className="text-xs text-stone-500">
-            You can close this tab. Nothing has been stored on a server.
-          </p>
-        </section>
-      )}
+      {step === "done" && <DoneStep />}
     </main>
+  );
+}
+
+function Header({ context }: { context: RequestContext }) {
+  return (
+    <header className="mb-8">
+      <p className="text-sm uppercase tracking-wide text-stone-500">
+        Character reference
+      </p>
+      <h1 className="mt-1 text-3xl font-serif font-semibold tracking-tight">
+        For {context.subject.name}
+      </h1>
+      <p className="mt-2 text-stone-600">
+        {context.subject.name} has asked you to provide a character reference
+        {context.purpose ? (
+          <>
+            {" "}
+            for <span className="italic">{context.purpose}</span>
+          </>
+        ) : null}
+        . This will take about ten minutes.
+      </p>
+      {context.details && (
+        <blockquote className="mt-4 rounded-md border-l-2 border-stone-300 bg-stone-100 p-3 text-sm text-stone-700">
+          <p className="font-medium text-stone-800 mb-1">
+            A note from {context.subject.name}:
+          </p>
+          <p className="whitespace-pre-wrap">{context.details}</p>
+        </blockquote>
+      )}
+    </header>
+  );
+}
+
+function IdentifyStep({
+  referee,
+  onChange,
+  onSubmit,
+  loading,
+  error,
+}: {
+  referee: Referee;
+  onChange: (r: Referee) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  loading: boolean;
+  error: string | null;
+}) {
+  const ready =
+    referee.name.trim() &&
+    referee.relationship.trim() &&
+    referee.knownDuration.trim();
+
+  return (
+    <form onSubmit={onSubmit} className="space-y-5">
+      <h2 className="text-xl font-serif font-semibold">A bit about you</h2>
+      <Field label="Your name" htmlFor="ref-name">
+        <input
+          id="ref-name"
+          type="text"
+          required
+          className={inputCls}
+          value={referee.name}
+          onChange={(e) => onChange({ ...referee, name: e.target.value })}
+        />
+      </Field>
+      <Field
+        label="Your relationship"
+        htmlFor="ref-rel"
+        hint="e.g. friend, neighbour, line manager, GP, family member."
+      >
+        <input
+          id="ref-rel"
+          type="text"
+          required
+          className={inputCls}
+          value={referee.relationship}
+          onChange={(e) =>
+            onChange({ ...referee, relationship: e.target.value })
+          }
+        />
+      </Field>
+      <Field label="How long have you known each other?" htmlFor="ref-known">
+        <input
+          id="ref-known"
+          type="text"
+          required
+          className={inputCls}
+          placeholder="e.g. about 5 years"
+          value={referee.knownDuration}
+          onChange={(e) =>
+            onChange({ ...referee, knownDuration: e.target.value })
+          }
+        />
+      </Field>
+
+      {error && (
+        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+          {error} You can still continue with the standard questions.
+        </p>
+      )}
+
+      <button
+        type="submit"
+        disabled={!ready || loading}
+        className="rounded-lg bg-stone-900 text-white px-4 py-2 font-medium disabled:bg-stone-300 disabled:cursor-not-allowed"
+      >
+        {loading ? "Loading questions…" : "Continue"}
+      </button>
+    </form>
+  );
+}
+
+function QuestionsStep({
+  questions,
+  responses,
+  onChangeResponse,
+  onBack,
+  onSubmit,
+  drafting,
+  error,
+}: {
+  questions: Question[];
+  responses: Record<string, string>;
+  onChangeResponse: (id: string, v: string) => void;
+  onBack: () => void;
+  onSubmit: () => void;
+  drafting: boolean;
+  error: string | null;
+}) {
+  const answered = questions.filter((q) =>
+    (responses[q.id] || "").trim()
+  ).length;
+
+  return (
+    <section className="space-y-6">
+      <div>
+        <h2 className="text-xl font-serif font-semibold">A few questions</h2>
+        <p className="text-sm text-stone-600 mt-1">
+          Two or three sentences each is plenty. We'll turn your answers into a
+          first draft you can edit before signing.
+        </p>
+      </div>
+
+      {error && (
+        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+          We couldn't generate tailored follow-ups, so we're using the standard
+          set.
+        </p>
+      )}
+
+      {questions.map((q, i) => (
+        <div key={q.id}>
+          <label
+            htmlFor={`q-${q.id}`}
+            className="block text-sm font-medium mb-1"
+          >
+            {i + 1}. {q.prompt}
+          </label>
+          <textarea
+            id={`q-${q.id}`}
+            className={`${inputCls} min-h-[100px]`}
+            value={responses[q.id] || ""}
+            onChange={(e) => onChangeResponse(q.id, e.target.value)}
+          />
+        </div>
+      ))}
+
+      <div className="flex items-center justify-between pt-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm text-stone-600 underline"
+        >
+          Back
+        </button>
+        <div className="flex items-center gap-3">
+          <span className="text-xs text-stone-500">
+            {answered}/{questions.length} answered
+          </span>
+          <button
+            type="button"
+            onClick={onSubmit}
+            disabled={answered === 0 || drafting}
+            className="rounded-lg bg-stone-900 text-white px-4 py-2 font-medium disabled:bg-stone-300 disabled:cursor-not-allowed"
+          >
+            {drafting ? "Drafting…" : "Generate draft"}
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function DraftStep({
+  draft,
+  onChange,
+  drafting,
+  error,
+  revisionInstruction,
+  onChangeInstruction,
+  onRevise,
+  onContinue,
+  onBack,
+}: {
+  draft: string;
+  onChange: (v: string) => void;
+  drafting: boolean;
+  error: string | null;
+  revisionInstruction: string;
+  onChangeInstruction: (v: string) => void;
+  onRevise: () => void;
+  onContinue: () => void;
+  onBack: () => void;
+}) {
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-xl font-serif font-semibold">Your draft letter</h2>
+        <p className="text-sm text-stone-600 mt-1">
+          Edit anything you'd like to change. You can also ask Claude to revise.
+        </p>
+      </div>
+
+      {error && (
+        <p className="text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+          {error}
+        </p>
+      )}
+
+      <textarea
+        className={`${inputCls} min-h-[400px] font-serif leading-relaxed`}
+        value={draft}
+        onChange={(e) => onChange(e.target.value)}
+        readOnly={drafting}
+      />
+
+      <div className="rounded-lg border border-stone-200 bg-white p-3 space-y-2">
+        <label
+          htmlFor="revision"
+          className="block text-sm font-medium text-stone-700"
+        >
+          Ask Claude to revise
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="revision"
+            type="text"
+            placeholder="e.g. make it shorter, more formal, less effusive"
+            className={`${inputCls} flex-1`}
+            value={revisionInstruction}
+            onChange={(e) => onChangeInstruction(e.target.value)}
+            disabled={drafting}
+          />
+          <button
+            type="button"
+            onClick={onRevise}
+            disabled={drafting || !revisionInstruction.trim()}
+            className="rounded-lg bg-stone-700 text-white px-3 py-2 text-sm font-medium disabled:bg-stone-300"
+          >
+            {drafting ? "Revising…" : "Revise"}
+          </button>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between pt-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm text-stone-600 underline"
+        >
+          Back to answers
+        </button>
+        <button
+          type="button"
+          onClick={onContinue}
+          disabled={drafting || !draft.trim()}
+          className="rounded-lg bg-stone-900 text-white px-4 py-2 font-medium disabled:bg-stone-300"
+        >
+          Looks good — sign
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SignStep({
+  context,
+  referee,
+  onChangeReferee,
+  typedName,
+  onChangeTypedName,
+  onSignatureChange,
+  signatureDataUrl,
+  signMethod,
+  onChangeSignMethod,
+  downloading,
+  onBack,
+  onDownload,
+}: {
+  context: RequestContext;
+  referee: Referee;
+  onChangeReferee: (r: Referee) => void;
+  typedName: string;
+  onChangeTypedName: (v: string) => void;
+  onSignatureChange: (v: string | null) => void;
+  signatureDataUrl: string | null;
+  signMethod: "digital" | "print";
+  onChangeSignMethod: (m: "digital" | "print") => void;
+  downloading: boolean;
+  onBack: () => void;
+  onDownload: () => void;
+}) {
+  const ready =
+    typedName.trim() && (signMethod === "print" || !!signatureDataUrl);
+
+  return (
+    <section className="space-y-5">
+      <div>
+        <h2 className="text-xl font-serif font-semibold">Sign and download</h2>
+        <p className="text-sm text-stone-600 mt-1">
+          Type your name as you'd like it to appear, then choose how you'd
+          like to sign.
+        </p>
+      </div>
+
+      <Field label="Your name as it should appear" htmlFor="typed-name">
+        <input
+          id="typed-name"
+          type="text"
+          className={inputCls}
+          value={typedName}
+          onChange={(e) => onChangeTypedName(e.target.value)}
+          placeholder={referee.name}
+        />
+      </Field>
+
+      <fieldset className="space-y-2">
+        <legend className="block text-sm font-medium mb-1">
+          How would you like to sign?
+        </legend>
+        <label className="flex items-start gap-2 rounded-lg border border-stone-300 bg-white p-3 cursor-pointer">
+          <input
+            type="radio"
+            name="sign-method"
+            value="digital"
+            checked={signMethod === "digital"}
+            onChange={() => onChangeSignMethod("digital")}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Sign digitally now</span>
+            <span className="block text-xs text-stone-500">
+              Draw your signature below; it'll be embedded in the PDF.
+            </span>
+          </span>
+        </label>
+        <label className="flex items-start gap-2 rounded-lg border border-stone-300 bg-white p-3 cursor-pointer">
+          <input
+            type="radio"
+            name="sign-method"
+            value="print"
+            checked={signMethod === "print"}
+            onChange={() => onChangeSignMethod("print")}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Print and sign by hand</span>
+            <span className="block text-xs text-stone-500">
+              Download the PDF with a blank line, print it, and sign on paper.
+            </span>
+          </span>
+        </label>
+      </fieldset>
+
+      <Field
+        label="Email (optional)"
+        htmlFor="ref-email"
+        hint="Included on the PDF if you'd like to be reachable by email."
+      >
+        <input
+          id="ref-email"
+          type="email"
+          className={inputCls}
+          value={referee.email}
+          onChange={(e) =>
+            onChangeReferee({ ...referee, email: e.target.value })
+          }
+        />
+      </Field>
+
+      <Field
+        label="Mobile (optional)"
+        htmlFor="ref-mobile"
+        hint="Included on the PDF if you'd like to be reachable by phone."
+      >
+        <input
+          id="ref-mobile"
+          type="tel"
+          className={inputCls}
+          value={referee.mobile || ""}
+          onChange={(e) =>
+            onChangeReferee({ ...referee, mobile: e.target.value })
+          }
+        />
+      </Field>
+
+      {signMethod === "digital" && (
+        <div>
+          <p className="block text-sm font-medium mb-1">Signature</p>
+          <SignaturePad onChange={onSignatureChange} />
+        </div>
+      )}
+
+      <div>
+        <p className="block text-sm font-medium mb-2">
+          Signature block preview
+        </p>
+        <SignatureBlockPreview
+          context={context}
+          referee={referee}
+          typedName={typedName}
+          signatureDataUrl={signMethod === "digital" ? signatureDataUrl : null}
+          signMethod={signMethod}
+        />
+      </div>
+
+      <div className="flex items-center justify-between pt-2">
+        <button
+          type="button"
+          onClick={onBack}
+          className="text-sm text-stone-600 underline"
+        >
+          Back to letter
+        </button>
+        <button
+          type="button"
+          onClick={onDownload}
+          disabled={!ready || downloading}
+          className="rounded-lg bg-stone-900 text-white px-4 py-2 font-medium disabled:bg-stone-300"
+        >
+          {downloading
+            ? "Building PDF…"
+            : signMethod === "digital"
+              ? "Sign and download PDF"
+              : "Download PDF to print"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function SignatureBlockPreview({
+  context,
+  referee,
+  typedName,
+  signatureDataUrl,
+  signMethod,
+}: {
+  context: RequestContext;
+  referee: Referee;
+  typedName: string;
+  signatureDataUrl: string | null;
+  signMethod: "digital" | "print";
+}) {
+  const displayName = typedName.trim() || referee.name.trim() || "(your name)";
+  return (
+    <div className="rounded-lg border border-stone-300 bg-white p-5 font-serif text-stone-900">
+      <div className="h-20 flex items-end">
+        {signMethod === "digital" ? (
+          signatureDataUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={signatureDataUrl}
+              alt="Your signature"
+              className="max-h-20 max-w-[200px]"
+            />
+          ) : (
+            <span className="text-stone-400 italic text-sm font-sans">
+              Your signature will appear here.
+            </span>
+          )
+        ) : (
+          <span className="text-stone-400 italic text-sm font-sans">
+            Sign here after printing.
+          </span>
+        )}
+      </div>
+      <div className="border-t border-stone-400 mt-1 mb-2 w-64" />
+      <p className="font-bold">{displayName}</p>
+      {referee.relationship && (
+        <p>
+          {referee.relationship} of {context.subject.name}
+        </p>
+      )}
+      {referee.knownDuration && <p>Known for: {referee.knownDuration}</p>}
+      {referee.email && <p>Email: {referee.email}</p>}
+      {referee.mobile && <p>Mobile: {referee.mobile}</p>}
+    </div>
+  );
+}
+
+function DoneStep() {
+  return (
+    <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-5">
+      <h2 className="text-xl font-serif font-semibold text-emerald-900">
+        Your reference is downloaded.
+      </h2>
+      <p className="mt-2 text-emerald-900/80 text-sm">
+        Send the PDF to whoever asked for it (and, if you'd like, keep a copy
+        for yourself). Thank you for taking the time.
+      </p>
+    </section>
+  );
+}
+
+function Field({
+  label,
+  htmlFor,
+  hint,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div>
+      <label htmlFor={htmlFor} className="block text-sm font-medium mb-1">
+        {label}
+      </label>
+      {children}
+      {hint && <p className="mt-1 text-xs text-stone-500">{hint}</p>}
+    </div>
+  );
+}
+
+const inputCls =
+  "w-full rounded-lg border border-stone-300 bg-white px-3 py-2 outline-none focus:border-stone-500 focus:ring-2 focus:ring-stone-200";
+
+function slug(s: string): string {
+  return (
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-|-$/g, "") || "ref"
   );
 }
